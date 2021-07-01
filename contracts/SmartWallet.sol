@@ -9,23 +9,26 @@ pragma solidity ^0.8.3;
 contract SmartWallet {
 
     event Deposited(address indexed from, uint amount);
-    event WithDrawal(address indexed to, uint amount);
-    event WithDrawalToBackup(address indexed to, uint amount);
-    event AccountLocked(address indexed from);
-    event AccountUnlocked(address indexed from);
+    event Withdrew(address indexed to, uint amount);
+    event WithdrewToBackup(address indexed to, uint amount);
     event AccountFrozen(address indexed from);
 
     struct Account{
         address payable backupWallet;
         bool frozen;
         uint ethBalance;
-        uint32 unlockStartTime;
-        uint32 unlockEndTime;
+        Withdrawal[] withdrawals;
+    }
+
+    enum WithdrawStatus{ INITIATED, CANCELLED, COMPLETED }
+
+    struct Withdrawal{
+        WithdrawStatus status;
+        uint amount;
+        uint32 timestamp;
     }
 
     mapping(address => Account) private accounts;
-    uint32 defaultUnlockDelay = 1 days;
-    uint32 defaultUnlockDuration = 1 days;
 
     /**
      * @notice Creates a SmartWallet account.
@@ -46,14 +49,35 @@ contract SmartWallet {
     }
 
     /**
-     * @notice Withdraw ETH from your SmartWallet account.
-     * @param _amount in WEI to withdraw.
+     * @notice Initiates a withdrawal of ETH from your SmartWallet account.
      */
-    function withdraw(uint _amount) external isUnlocked isNotFrozen{ 
-        require(accounts[msg.sender].ethBalance > _amount, "Withdraw amount exceeds the balance.");
-        accounts[msg.sender].ethBalance -= _amount;
-        payable(msg.sender).transfer(_amount);
-        emit WithDrawal(msg.sender, _amount);
+    function initiateWithdrawal(uint _amount) external isNotFrozen{
+        require(accounts[msg.sender].ethBalance >= _amount, "Withdraw amount exceeds the balance.");
+        accounts[msg.sender].withdrawals.push(Withdrawal(WithdrawStatus.INITIATED, _amount, uint32(block.timestamp)));
+    }
+
+    /**
+     * @notice Cancels the last initiated withdrawal.
+     */
+    function cancelWithdrawal() external isNotFrozen {
+        require(accounts[msg.sender].withdrawals[accounts[msg.sender].withdrawals.length-1].status == WithdrawStatus.INITIATED);
+        Withdrawal storage withdrawal = accounts[msg.sender].withdrawals[accounts[msg.sender].withdrawals.length-1];
+        withdrawal.status = WithdrawStatus.CANCELLED;
+        withdrawal.timestamp = uint32(block.timestamp);
+    }
+
+    /**
+     * @notice Completes the last initiated withdrawal request of ETH from your SmartWallet account.
+     * @param _amount in WEI to withdraw. Must match the amount from initiateWithdrawal. 
+     */
+    function completeWithdrawal(uint _amount) external isNotFrozen isValidWithdrawal{
+        require(_amount == accounts[msg.sender].withdrawals[accounts[msg.sender].withdrawals.length-1].amount, "_amount does not match amount from withdrawalId.");
+        Withdrawal storage withdrawal = accounts[msg.sender].withdrawals[accounts[msg.sender].withdrawals.length-1];
+        withdrawal.status = WithdrawStatus.COMPLETED;
+        withdrawal.timestamp = uint32(block.timestamp);
+        accounts[msg.sender].ethBalance -= withdrawal.amount;
+        payable(msg.sender).transfer(withdrawal.amount);
+        emit Withdrew(msg.sender, withdrawal.amount);
     }
 
     /**
@@ -61,31 +85,11 @@ contract SmartWallet {
      @param _amount in WEI to withdraw.
      */
     function withdrawToBackup(uint _amount) external isFrozen{ 
-        require(accounts[msg.sender].ethBalance > _amount, "Withdraw amount exceeds the balance.");
+        require(accounts[msg.sender].ethBalance >= _amount, "Withdraw amount exceeds the balance.");
         Account storage myAccount = accounts[msg.sender];
         myAccount.ethBalance -= _amount;
         payable(myAccount.backupWallet).transfer(_amount);
-        emit WithDrawalToBackup(myAccount.backupWallet, _amount);
-    }
-
-    /**
-     * @notice Locks your account which disables withdrawals until account is unlocked.
-     */
-    function lockAccount() external isNotFrozen{
-        Account storage myAccount = accounts[msg.sender];
-        myAccount.unlockStartTime = 0;
-        myAccount.unlockEndTime = 0;
-        emit AccountLocked(msg.sender);
-    }
-
-    /**
-     * @notice Unlocks your account which enables withdrawals in 24hrs for 24hrs.
-     */
-    function unlockAccount() external isNotFrozen{
-        Account storage myAccount = accounts[msg.sender];
-        myAccount.unlockStartTime = uint32(block.timestamp) + defaultUnlockDelay;
-        myAccount.unlockEndTime = myAccount.unlockStartTime + defaultUnlockDuration;
-        emit AccountUnlocked(msg.sender);
+        emit WithdrewToBackup(myAccount.backupWallet, _amount);
     }
 
     /**
@@ -100,9 +104,14 @@ contract SmartWallet {
      @notice Returns your account details.
      @return Your wallet's address, if it's been frozen, the ETH (in WEI) balance, unlock start time, and unlock end time.
      */
-    function getAccountDetails() external view returns(address, bool, uint, uint32, uint32){
+    function getAccountDetails() external view returns(address, bool, uint){
         Account memory myAccount = accounts[msg.sender];
-        return (myAccount.backupWallet, myAccount.frozen, myAccount.ethBalance, myAccount.unlockStartTime, myAccount.unlockEndTime);
+        return (myAccount.backupWallet, myAccount.frozen, myAccount.ethBalance);
+    }
+
+    function getWithdrawalDetails() external view returns(WithdrawStatus, uint, uint32){
+        Withdrawal memory withdrawal = accounts[msg.sender].withdrawals[accounts[msg.sender].withdrawals.length-1];
+        return (withdrawal.status, withdrawal.amount, withdrawal.timestamp);
     }
 
     modifier hasAccount(){
@@ -110,10 +119,10 @@ contract SmartWallet {
         _;
     }
 
-    modifier isUnlocked(){
-        Account memory myAccount = accounts[msg.sender];
-        require(block.timestamp >= myAccount.unlockStartTime && block.timestamp < myAccount.unlockEndTime, "Account is locked.");
-       _; 
+    modifier isValidWithdrawal(){
+        Withdrawal memory withdrawal = accounts[msg.sender].withdrawals[accounts[msg.sender].withdrawals.length-1];
+        require(withdrawal.status == WithdrawStatus.INITIATED && withdrawal.timestamp + 1 days <= block.timestamp && withdrawal.timestamp + 2 days >= block.timestamp);
+        _;
     }
 
     modifier isNotFrozen(){

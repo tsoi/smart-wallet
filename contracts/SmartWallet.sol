@@ -2,14 +2,16 @@ pragma solidity ^0.8.3;
 
 /**
  * @title Smart Wallet Contract
- * @notice A wallet with added security features that allows you to lock or freeze your account. 
+ * @notice A wallet that protects your assets even if your private key gets compromised.
  * @dev This contract is a proof of concept and should not be used in mainnet/production. 
  * @author Kevin Tsoi
  */
 contract SmartWallet {
 
     event Deposited(address indexed from, uint amount);
-    event Withdrew(address indexed to, uint amount);
+    event WithdrawIntiated(address indexed to, uint amount);
+    event WithdrawCancelled(address indexed to, uint amount);
+    event WithdrawCompleted(address indexed to, uint amount);
     event WithdrewToBackup(address indexed to, uint amount);
     event AccountFrozen(address indexed from);
 
@@ -54,6 +56,7 @@ contract SmartWallet {
     function initiateWithdrawal(uint _amount) external isNotFrozen{
         require(accounts[msg.sender].ethBalance >= _amount, "Withdraw amount exceeds the balance.");
         accounts[msg.sender].withdrawals.push(Withdrawal(WithdrawStatus.INITIATED, _amount, uint32(block.timestamp)));
+        emit WithdrawIntiated(msg.sender, _amount);
     }
 
     /**
@@ -64,6 +67,7 @@ contract SmartWallet {
         Withdrawal storage withdrawal = accounts[msg.sender].withdrawals[accounts[msg.sender].withdrawals.length-1];
         withdrawal.status = WithdrawStatus.CANCELLED;
         withdrawal.timestamp = uint32(block.timestamp);
+        emit WithdrawCancelled(msg.sender, withdrawal.amount);
     }
 
     /**
@@ -77,7 +81,7 @@ contract SmartWallet {
         withdrawal.timestamp = uint32(block.timestamp);
         accounts[msg.sender].ethBalance -= withdrawal.amount;
         payable(msg.sender).transfer(withdrawal.amount);
-        emit Withdrew(msg.sender, withdrawal.amount);
+        emit WithdrawCompleted(msg.sender, withdrawal.amount);
     }
 
     /**
